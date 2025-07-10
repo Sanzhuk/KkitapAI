@@ -10,6 +10,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import hashlib
 import json
+import tempfile
+
 from database import (
     db_manager, 
     get_user_by_username, 
@@ -657,24 +659,80 @@ class MindMapApp:
             
             with tab2:
                 uploaded_file = st.file_uploader("Choose PDF or Markdown file", type=['pdf', 'md'])
+                
                 if uploaded_file:
-                    try:
-                        # Добавляем выбор языка для загруженного файла
-                        target_language = st.selectbox(
-                            "Select output language",
-                            options=list(languages.keys()),
-                            format_func=lambda x: languages[x],
-                            index=0,
-                            key="upload_language"
-                        )
-                        
-                        if st.button("Process File"):
-                            # Создаем генератор с выбранным языком
-                            generator = MindMapGenerator(target_language=target_language)
-                            
-                            # Остальной код обработки файла...
-                    except Exception as e:
-                        st.error(f"Error processing file: {str(e)}")
+                    # Prompt for mind map name (default to file name, but allow editing)
+                    name = st.text_input("MindMap Name", value=os.path.splitext(uploaded_file.name)[0])
+
+                    # Select output language
+                    languages = {
+                        'auto': 'Auto-detect',
+                        'ru': 'Русский',
+                        'en': 'English',
+                        'es': 'Español',
+                        'fr': 'Français',
+                        'de': 'Deutsch',
+                        'it': 'Italiano',
+                        'pt': 'Português',
+                        'zh': '中文',
+                        'ja': '日本語',
+                    }
+                    target_language = st.selectbox(
+                        "Select output language",
+                        options=list(languages.keys()),
+                        format_func=lambda x: languages[x],
+                        index=0,
+                        key="upload_language"
+                    )
+
+                    if st.button("Process File"):
+                        with st.spinner("Processing file..."):
+                            try:
+
+                                with tempfile.TemporaryDirectory() as temp_dir:
+                                    file_path = os.path.join(temp_dir, uploaded_file.name)
+                                    with open(file_path, "wb") as f:
+                                        f.write(uploaded_file.getvalue())
+
+                                    if uploaded_file.name.endswith('.pdf'):
+                                        # Extract chapters
+                                        chapters = PDFChapterExtractor().extract_chapters(file_path)
+                                        if not chapters:
+                                            st.error("No chapters found in PDF.")
+                                            return
+                                        # Generate mind map for each chapter
+                                        generator = MindMapGenerator(target_language=target_language)
+                                        mindmap_content = ""
+                                        for title, content in chapters:
+                                            mindmap_content += generator.generate_mindmap(content) + "\n\n"
+                                    elif uploaded_file.name.endswith('.md'):
+                                        mindmap_content = uploaded_file.getvalue().decode('utf-8')
+                                    else:
+                                        st.error("Unsupported file type.")
+                                        return
+
+                                if not name:
+                                    st.error("Please enter a name for your mind map.")
+                                    return
+
+                                # Save to DB
+                                new_mindmap = create_mindmap(
+                                    user_id=st.session_state.user_id,
+                                    name=name,
+                                    content=mindmap_content
+                                )
+                                st.success("Mind map generated successfully!")
+                                # Optionally, show preview
+                                with st.expander("Preview Generated Mind Map", expanded=True):
+                                    cleaned_content = self.clean_mindmap_content(mindmap_content)
+                                    markmap.markmap(cleaned_content)
+                                # Set session state to edit/view the new mind map
+                                st.session_state.current_mindmap = new_mindmap['id']
+                                st.session_state.current_content = mindmap_content
+                                st.session_state.current_mindmap_id = new_mindmap['id']
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error processing file: {str(e)}")
             
             with tab3:
                 name = st.text_input("MindMap Name", key="prompt_mindmap_name")
