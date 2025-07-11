@@ -12,6 +12,7 @@ import hashlib
 import json
 import tempfile
 import fitz
+import logging
 
 from database import (
     db_manager, 
@@ -35,7 +36,6 @@ from database import (
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import time
-import logging
 from math import cos, sin, pi
 from canvas_exporter import CanvasExporter
 from html_exporter import HTMLExporter
@@ -78,6 +78,8 @@ if is_prod:
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+
+logger = logging.getLogger(__name__)
 
 class MindMapApp:
     def __init__(self):
@@ -702,17 +704,27 @@ class MindMapApp:
                                         pdf_doc.close()
                                         generator = MindMapGenerator(target_language=target_language)
                                         if num_pages < 30:
+                                            # Generate mindmap from full text
                                             full_text = PDFChapterExtractor().extract_full_text(file_path)
                                             mindmap_content = generator.generate_mindmap(full_text)
                                         else:
-                                            # Extract chapters and generate mindmap for each
-                                            chapters = PDFChapterExtractor().extract_chapters(file_path)
-                                            if not chapters:
-                                                st.error("No chapters found in PDF.")
-                                                return
-                                            mindmap_content = ""
-                                            for title, content in chapters:
-                                                mindmap_content += generator.generate_mindmap(content) + "\n\n"
+                                            # For large PDFs, process in 30-page segments
+                                            import fitz
+                                            pdf_doc = fitz.open(file_path)
+                                            segment_mindmaps = []
+                                            for start in range(0, num_pages, 30):
+                                                end = min(start + 30, num_pages)
+                                                segment_texts = []
+                                                for i in range(start, end):
+                                                    page = pdf_doc.load_page(i)
+                                                    segment_texts.append(page.get_text("text"))
+                                                segment_full_text = '\n'.join(segment_texts)
+                                                cleaned_segment_text = PDFChapterExtractor().clean_text(segment_full_text)
+                                                segment_mindmap = generator.generate_mindmap(cleaned_segment_text)
+                                                segment_mindmaps.append(segment_mindmap)
+                                            pdf_doc.close()
+                                            mindmap_content = '\n\n'.join(segment_mindmaps)
+
                                     else:
                                         st.error("Unsupported file type.")
                                         return
@@ -869,12 +881,12 @@ class MindMapApp:
                         key = f"markdown_input_{mindmap['id']}"
                         if key in st.session_state:
                             st.session_state.current_content = st.session_state[key]
-                            update_mindmap(mindmap['id'], mindmap['name'], st.session_state.current_content)
+                            update_mindmap(mindmap['id'], mindmap['name'], st.session_state.current_content or "")
                     
                     # Редактор markdown с callback
                     content = st.text_area(
                         "Edit Content",
-                        value=st.session_state.current_content,
+                        value=st.session_state.current_content or "",
                         height=500,
                         key=f"markdown_input_{mindmap['id']}",  # Уникальный ключ для каждого майндмапа
                         on_change=on_content_change
@@ -992,7 +1004,7 @@ class MindMapApp:
                                                                 current_content = f"{current_content}\n\n{chapter_mindmap}"
                                                                 
                                                                 # Обновляем майндмап в базе данных после каждой успешной главы
-                                                                update_mindmap(mindmap['id'], mindmap['name'], current_content)
+                                                                update_mindmap(mindmap['id'], mindmap['name'], current_content or "")
                                                                 st.session_state.current_content = current_content
 
                                                                 # Удаляем вывод текущего результата
@@ -1022,7 +1034,7 @@ class MindMapApp:
                                                         if st.button("✔️ Apply Generated Content"):
                                                             # Применяем сгенерированный контент
                                                             st.session_state.current_content = st.session_state.generated_content
-                                                            update_mindmap(mindmap['id'], mindmap['name'], st.session_state.current_content)
+                                                            update_mindmap(mindmap['id'], mindmap['name'], st.session_state.current_content or "")
                                                             st.session_state.generated_content = None
                                                             st.session_state.is_generating = False
                                                             st.success("✨ Content updated successfully!")
@@ -1055,11 +1067,11 @@ class MindMapApp:
                                     new_content = uploaded_md.getvalue().decode('utf-8')
                                     
                                     # Собираем весь контент вместе
-                                    combined_content = f"{st.session_state.current_content}\n\n{new_content}"
+                                    combined_content = f"{st.session_state.current_content or ''}\n\n{new_content}"
                                     
                                     # Обновляем состояние и базу данных за один раз
                                     st.session_state.current_content = combined_content
-                                    update_mindmap(mindmap['id'], mindmap['name'], combined_content)
+                                    update_mindmap(mindmap['id'], mindmap['name'], combined_content or "")
                                     
                                     # Отмечаем файл как обработанный
                                     st.session_state.processed_files.add(file_id)
@@ -1072,7 +1084,7 @@ class MindMapApp:
                 
                 with col2:
                     st.subheader("Preview")
-                    cleaned_content = self.clean_mindmap_content(st.session_state.current_content)
+                    cleaned_content = self.clean_mindmap_content(st.session_state.current_content or "")
 
                     # Render Markmap and PNG export button together in a single HTML block
                     import json as _json
