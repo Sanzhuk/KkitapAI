@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import hashlib
 import json
 import tempfile
+import fitz
 
 from database import (
     db_manager, 
@@ -695,18 +696,23 @@ class MindMapApp:
                                         f.write(uploaded_file.getvalue())
 
                                     if uploaded_file.name.endswith('.pdf'):
-                                        # Extract chapters
-                                        chapters = PDFChapterExtractor().extract_chapters(file_path)
-                                        if not chapters:
-                                            st.error("No chapters found in PDF.")
-                                            return
-                                        # Generate mind map for each chapter
+                                        import fitz
+                                        pdf_doc = fitz.open(file_path)
+                                        num_pages = pdf_doc.page_count
+                                        pdf_doc.close()
                                         generator = MindMapGenerator(target_language=target_language)
-                                        mindmap_content = ""
-                                        for title, content in chapters:
-                                            mindmap_content += generator.generate_mindmap(content) + "\n\n"
-                                    elif uploaded_file.name.endswith('.md'):
-                                        mindmap_content = uploaded_file.getvalue().decode('utf-8')
+                                        if num_pages < 30:
+                                            full_text = PDFChapterExtractor().extract_full_text(file_path)
+                                            mindmap_content = generator.generate_mindmap(full_text)
+                                        else:
+                                            # Extract chapters and generate mindmap for each
+                                            chapters = PDFChapterExtractor().extract_chapters(file_path)
+                                            if not chapters:
+                                                st.error("No chapters found in PDF.")
+                                                return
+                                            mindmap_content = ""
+                                            for title, content in chapters:
+                                                mindmap_content += generator.generate_mindmap(content) + "\n\n"
                                     else:
                                         st.error("Unsupported file type.")
                                         return

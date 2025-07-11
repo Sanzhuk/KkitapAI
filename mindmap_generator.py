@@ -30,6 +30,7 @@ class MindMapGenerator:
         # Поддерживаемые языки
         self.supported_languages = {
             'auto': 'Auto-detect',
+            'kk': 'Қазақша',
             'ru': 'Русский',
             'en': 'English',
             'es': 'Español',
@@ -43,6 +44,7 @@ class MindMapGenerator:
         
         # Промпты для разных языков
         self.system_prompts = {
+            'kk': "Мәтіннен анық, құрылымды майндмэп жасаңыз. Негізгі ұғымдар мен практикалық қорытындыларға назар аударыңыз.",
             'ru': "Создавайте четкие и организованные майндмапы на русском языке. Фокусируйтесь на ключевых концепциях и практических выводах.",
             'en': "Create clear and organized mind maps in English. Focus on key concepts and practical insights.",
             'es': "Cree mapas mentales claros y organizados en español. Concéntrese en conceptos clave y perspectivas prácticas.",
@@ -92,27 +94,19 @@ class MindMapGenerator:
         except Exception as e:
             logger.warning(f"Error saving to cache: {str(e)}")
 
-    def split_text_into_chunks(self, text: str, max_tokens: int = 12000) -> List[str]:
-        """Разделяет текст на части подходящего размера"""
+    def split_text_into_chunks(self, text: str, max_tokens: int = 6000) -> List[str]:
+        """Разделяет текст на части подходящего размера (уменьшен max_tokens для длинных PDF)"""
         enc = tiktoken.encoding_for_model("gpt-3.5-turbo-16k")
-        
-        # Увеличиваем размер чанка для уменьшения количества запросов
         chunks = []
-        current_chunk = []
-        current_length = 0
-        
         # Сначала разбиваем на главы/секции по заголовкам
         sections = re.split(r'(?=\n#+\s)', text)
-        
         for section in sections:
             section_tokens = len(enc.encode(section))
-            
             if section_tokens > max_tokens:
                 # Если секция слишком большая, разбиваем её на параграфы
                 paragraphs = section.split('\n\n')
                 temp_chunk = []
                 temp_length = 0
-                
                 for para in paragraphs:
                     para_tokens = len(enc.encode(para))
                     if temp_length + para_tokens > max_tokens:
@@ -123,24 +117,28 @@ class MindMapGenerator:
                     else:
                         temp_chunk.append(para)
                         temp_length += para_tokens
-                
                 if temp_chunk:
                     chunks.append('\n\n'.join(temp_chunk))
             else:
-                # Если секция помещается целиком, добавляем её
                 chunks.append(section)
-        
         return chunks
 
     def detect_language(self, text: str) -> str:
-        """Определяет язык текста"""
-        # Простая проверка на кириллицу
-        if any(ord('а') <= ord(c) <= ord('я') for c in text.lower()):
+        """Определяет язык текста (kk, ru, en)"""
+        # Казахский: кириллица (ә, ғ, қ, ң, ө, ұ, ү, һ, і) или латиница (á, ǵ, q, ń, ó, ú, ú, h, i)
+        if re.search(r'[әғқңөұүһіӘҒҚҢӨҰҮҺІ]', text) or re.search(r'[áǵqńóúühiÁǴQŃÓÚÜHI]', text):
+            return 'kk'
+        # Русский: кириллица
+        if re.search(r'[а-яА-Я]', text):
             return 'ru'
+        # Английский: латиница
+        if re.search(r'[a-zA-Z]', text):
+            return 'en'
+        # По умолчанию английский
         return 'en'
 
     def generate_mindmap(self, text: str) -> str:
-        """Генерирует майндмап из текста с помощью GPT-3.5"""
+        """Генерирует майндмап из текста с помощью GPT-4o mini"""
         try:
             cached_result = self.get_from_cache(text)
             if cached_result:
@@ -150,14 +148,34 @@ class MindMapGenerator:
             language = self.target_language if self.target_language != 'auto' else self.detect_language(text)
             system_prompt = self.system_prompts.get(language, self.system_prompts['en'])
 
-            chunks = self.split_text_into_chunks(text)
+            chunks = self.split_text_into_chunks(text, max_tokens=6000)  # уменьшить размер чанка для длинных PDF
             all_results = []
             
             for i, chunk in enumerate(chunks, 1):
                 logger.info(f"Processing chunk {i}/{len(chunks)}")
                 
-                prompt = {
-                    'ru': f"""
+                if language == 'kk':
+                    prompt = f"""
+                    Осы мәтін бөлігінен майндмэп бөлімін жасаңыз ({i}/{len(chunks)}).
+                    Негізгі ақпаратты анық құрылымға бөліп ұйымдастырыңыз.
+
+                    Талаптар:
+                    1. ҚҰРЫЛЫМЫ:
+                       - Негізгі тақырыптар үшін H2 тақырыпшаларын қолданыңыз
+                       - Негізгі мәліметтер үшін маркерленген тізім қолданыңыз
+                       - Құрылымды таза және ұйымдасқан ұстаңыз
+                    
+                    2. МАЗМҰНЫ:
+                       - Негізгі идеялар мен ұғымдарға назар аударыңыз
+                       - Практикалық қорытындылар мен мысалдар қосыңыз
+                       - Қайталаудан аулақ болыңыз
+                       - Техникалық немесе баспа ақпаратын өткізіп жіберіңіз
+                    
+                    Мәтін бөлімі {i}/{len(chunks)}:
+                    {chunk}
+                    """
+                elif language == 'ru':
+                    prompt = f"""
                     Создайте раздел майндмапа из этой части текста ({i}/{len(chunks)}).
                     Извлеките и организуйте ключевую информацию в четкую структуру.
 
@@ -175,8 +193,9 @@ class MindMapGenerator:
                     
                     Часть текста {i}/{len(chunks)}:
                     {chunk}
-                    """,
-                    'en': f"""
+                    """
+                else:
+                    prompt = f"""
                     Create a mind map section from this text part {i}/{len(chunks)}.
                     Extract and organize the key information into a clear structure.
 
@@ -195,8 +214,6 @@ class MindMapGenerator:
                     Text section {i}/{len(chunks)}:
                     {chunk}
                     """
-                }[language]
-
                 max_retries = 3
                 retry_delay = self.request_delay
                 
@@ -205,7 +222,7 @@ class MindMapGenerator:
                         time.sleep(retry_delay)
                         
                         response = self.client.chat.completions.create(
-                            model="gpt-3.5-turbo-16k",
+                            model="gpt-4o",
                             messages=[
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": prompt}
@@ -227,10 +244,10 @@ class MindMapGenerator:
                             continue
                         raise
 
-                combined_result = self.combine_chunk_results(all_results)
-                self.save_to_cache(text, combined_result)
-                
-                return combined_result
+            combined_result = self.combine_chunk_results(all_results)
+            self.save_to_cache(text, combined_result)
+            
+            return combined_result
 
         except Exception as e:
             logger.error(f"Error generating mindmap: {str(e)}")

@@ -171,6 +171,16 @@ class PDFChapterExtractor:
         
         return chapters
 
+    def extract_full_text(self, pdf_path: str) -> str:
+        """Извлекает и очищает полный текст из PDF файла (без деления на главы)"""
+        doc = fitz.open(pdf_path)
+        all_text = []
+        for page in doc:
+            page_text = page.get_text("text")
+            all_text.append(page_text)
+        full_text = '\n'.join(all_text)
+        return self.clean_text(full_text)
+
     def save_chapters_to_files(self, chapters: List[Tuple[str, str]], output_dir: str):
         """Сохраняет главы в файлы"""
         import os
