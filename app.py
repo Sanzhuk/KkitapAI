@@ -13,6 +13,7 @@ import json
 import tempfile
 import fitz
 import logging
+import pdf2image 
 
 from database import (
     db_manager, 
@@ -688,46 +689,120 @@ class MindMapApp:
                         key="upload_language"
                     )
 
-                    if st.button("Process File"):
-                        with st.spinner("Processing file..."):
+                    if uploaded_file.name.endswith('.pdf'):
+                        # Save PDF to temp file
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+                            tmp_pdf.write(uploaded_file.getvalue())
+                            pdf_path = tmp_pdf.name
+
+                        # Render PDF pages as images using PyMuPDF (fitz)
+                        try:
+                            doc = fitz.open(pdf_path)
+                            num_pages = doc.page_count
+                            st.write(f"Total pages: {num_pages}")
+                            page_thumbnails = []
+                            for i in range(num_pages):
+                                page = doc.load_page(i)
+                                pix = page.get_pixmap(dpi=80)
+                                img_bytes = pix.tobytes("png")
+                                page_thumbnails.append(img_bytes)
+                            doc.close()
+                        except Exception as e:
+                            st.error(f"Error rendering PDF preview: {str(e)}")
+                            page_thumbnails = []
+                            num_pages = 0
+
+                        # Improved single-page PDF viewer with centered navigation and image
+                        if page_thumbnails:
+                            if 'pdf_preview_page' not in st.session_state:
+                                st.session_state['pdf_preview_page'] = 0
+                            if 'selected_pdf_pages' not in st.session_state:
+                                st.session_state['selected_pdf_pages'] = set()
+                            current_page = st.session_state['pdf_preview_page']
+                            total_pages = num_pages
+
+                            st.markdown("<div style='display: flex; justify-content: center; align-items: center;'>", unsafe_allow_html=True)
+                            col_left, col_img, col_right = st.columns([1, 6, 1], gap='small')
+                            with col_left:
+                                st.markdown(
+                                    "<div style='display: flex; justify-content: flex-end; align-items: center; height: 100%;'>",
+                                    unsafe_allow_html=True
+                                )
+                                if st.button('⬅️', key='pdf_prev', help="Previous page"):
+                                    if current_page > 0:
+                                        st.session_state['pdf_preview_page'] -= 1
+                                        st.rerun()
+                                st.markdown("</div>", unsafe_allow_html=True)
+                            with col_img:
+                                st.image(page_thumbnails[current_page], caption=None, width=350)
+                            with col_right:
+                                st.markdown(
+                                    "<div style='display: flex; justify-content: flex-start; align-items: center; height: 100%;'>",
+                                    unsafe_allow_html=True
+                                )
+                                if st.button('➡️', key='pdf_next', help="Next page"):
+                                    if current_page < total_pages-1:
+                                        st.session_state['pdf_preview_page'] += 1
+                                        st.rerun()
+                                st.markdown("</div>", unsafe_allow_html=True)
+                            st.markdown("</div>", unsafe_allow_html=True)
+
+                            # Centered page indicator and selection
+                            st.markdown(
+                                f"<div style='text-align: center; margin-top: 0.5rem;'><b>Page {current_page+1} of {total_pages}</b></div>",
+                                unsafe_allow_html=True
+                            )
+                            # Selection/deselection buttons
+                            # select_col, deselect_col = st.columns([1, 1])
+                            # with select_col:
+                                # if (current_page+1) not in st.session_state['selected_pdf_pages']:
+                                    # if st.button("Select this page", key=f'select_page_{current_page+1}'):
+                                    #     st.session_state['selected_pdf_pages'].add(current_page+1)
+                                    #     st.rerun()
+                            # with deselect_col:
+                            #     if (current_page+1) in st.session_state['selected_pdf_pages']:
+                                    # if st.button("Deselect this page", key=f'deselect_page_{current_page+1}'):
+                                    #     st.session_state['selected_pdf_pages'].remove(current_page+1)
+                                    #     st.rerun()
+                            st.markdown(f"**Selected pages:** {sorted(st.session_state['selected_pdf_pages'])}")
+
+                        # Page selection UI (manual input still available)
+                        st.markdown("**Or enter pages to process (e.g. 1-5,7,10-12):**")
+                        page_input = st.text_input("Pages", value=','.join(str(p) for p in sorted(st.session_state.get('selected_pdf_pages', []))))
+
+                        def parse_page_input(page_input, num_pages):
+                            pages = set()
+                            for part in page_input.split(','):
+                                part = part.strip()
+                                if '-' in part:
+                                    try:
+                                        start, end = part.split('-')
+                                        pages.update(range(int(start), int(end)+1))
+                                    except Exception:
+                                        continue
+                                else:
+                                    if part.isdigit():
+                                        pages.add(int(part))
+                            # Clamp to valid page numbers
+                            return sorted([p for p in pages if 1 <= p <= num_pages])
+
+                        selected_pages = parse_page_input(page_input, num_pages)
+                        st.write(f"Selected pages: {selected_pages}")
+                        st.session_state['selected_pdf_pages'] = set(selected_pages)
+
+                        if st.button("Generate Mindmap from Selected Pages"):
                             try:
-
-                                with tempfile.TemporaryDirectory() as temp_dir:
-                                    file_path = os.path.join(temp_dir, uploaded_file.name)
-                                    with open(file_path, "wb") as f:
-                                        f.write(uploaded_file.getvalue())
-
-                                    if uploaded_file.name.endswith('.pdf'):
-                                        import fitz
-                                        pdf_doc = fitz.open(file_path)
-                                        num_pages = pdf_doc.page_count
-                                        pdf_doc.close()
-                                        generator = MindMapGenerator(target_language=target_language)
-                                        if num_pages < 30:
-                                            # Generate mindmap from full text
-                                            full_text = PDFChapterExtractor().extract_full_text(file_path)
-                                            mindmap_content = generator.generate_mindmap(full_text)
-                                        else:
-                                            # For large PDFs, process in 30-page segments
-                                            import fitz
-                                            pdf_doc = fitz.open(file_path)
-                                            segment_mindmaps = []
-                                            for start in range(0, num_pages, 30):
-                                                end = min(start + 30, num_pages)
-                                                segment_texts = []
-                                                for i in range(start, end):
-                                                    page = pdf_doc.load_page(i)
-                                                    segment_texts.append(page.get_text("text"))
-                                                segment_full_text = '\n'.join(segment_texts)
-                                                cleaned_segment_text = PDFChapterExtractor().clean_text(segment_full_text)
-                                                segment_mindmap = generator.generate_mindmap(cleaned_segment_text)
-                                                segment_mindmaps.append(segment_mindmap)
-                                            pdf_doc.close()
-                                            mindmap_content = '\n\n'.join(segment_mindmaps)
-
-                                    else:
-                                        st.error("Unsupported file type.")
-                                        return
+                                doc = fitz.open(pdf_path)
+                                selected_texts = []
+                                for p in selected_pages:
+                                    page = doc.load_page(p-1)  # 0-based index
+                                    # The following is correct for PyMuPDF; linter may warn but works at runtime
+                                    selected_texts.append(page.get_text("text"))
+                                doc.close()
+                                combined_text = "\n".join(selected_texts)
+                                cleaned_text = PDFChapterExtractor().clean_text(combined_text)
+                                generator = MindMapGenerator(target_language=target_language)
+                                mindmap_content = generator.generate_mindmap(cleaned_text)
 
                                 if not name:
                                     st.error("Please enter a name for your mind map.")
@@ -750,7 +825,12 @@ class MindMapApp:
                                 st.session_state.current_mindmap_id = new_mindmap['id']
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Error processing file: {str(e)}")
+                                st.error(f"Error processing selected pages: {str(e)}")
+                    elif uploaded_file.name.endswith('.md'):
+                        mindmap_content = uploaded_file.getvalue().decode('utf-8')
+                    else:
+                        st.error("Unsupported file type.")
+                        return
             
             with tab3:
                 name = st.text_input("MindMap Name", key="prompt_mindmap_name")
